@@ -85,9 +85,11 @@ func (set *errorSet) add(err error) {
 
 func (set *errorSet) printAll() {
 	set.mu.Lock()
-	fmt.Printf("%d errors:\n", len(set.errors))
-	for _, error := range set.errors {
-		fmt.Println("-", error)
+	if len(set.errors) > 0 {
+		fmt.Printf("%d errors:\n", len(set.errors))
+		for _, error := range set.errors {
+			fmt.Println("-", error)
+		}
 	}
 	set.mu.Unlock()
 }
