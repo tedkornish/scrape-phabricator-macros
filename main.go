@@ -93,11 +93,13 @@ func main() {
 			case err := <-errChan:
 				errors = append(errors, err)
 				bar.Increment()
+				wg.Done()
 			case image := <-imageChan:
 				if err := config.writer.writeImage(image); err != nil {
 					errors = append(errors, err)
 				}
 				bar.Increment()
+				wg.Done()
 			}
 		}
 	}()
