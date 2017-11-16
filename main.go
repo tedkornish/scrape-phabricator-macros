@@ -9,7 +9,13 @@ import (
 	"github.com/cheggaaa/pb"
 )
 
-func main() {
+type config struct {
+	client               client
+	writer               writer
+	numConcurrentFetches int
+}
+
+func getConfig() (config, error) {
 	host := flag.String("host", "", "the host of the Phabricator instance")
 	key := flag.String("key", "", "the Conduit API key for Phabricator")
 	dir := flag.String("dir", "", "the output directory for the macro images")
@@ -32,16 +38,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	client := client{host: *host, key: *key}
-	writer := writer{dir: *dir}
+	return config{
+		client:               client{host: *host, key: *key},
+		writer:               writer{dir: *dir},
+		numConcurrentFetches: *numConcurrentFetches,
+	}, nil
+}
+
+func main() {
+	config, err := getConfig()
+	if err != nil {
+		fmt.Println("Failed to get config:", err)
+		os.Exit(1)
+	}
 
 	// Test the writer before sending any HTTP requests so we can short-circuit.
-	if err := writer.test(); err != nil {
+	if err := config.writer.test(); err != nil {
 		fmt.Println("Can't write to specified directory:", err)
 		os.Exit(1)
 	}
 
-	macros, err := client.getMacros()
+	macros, err := config.client.getMacros()
 	if err != nil {
 		fmt.Println("Failed to fetch macros:", err)
 		os.Exit(1)
@@ -56,11 +73,11 @@ func main() {
 	imageChan := make(chan macroImage)
 	var errors []error
 
-	for i := 0; i < *numConcurrentFetches; i++ {
+	for i := 0; i < config.numConcurrentFetches; i++ {
 		go func() {
 			for {
 				macro := <-pendingMacros
-				imageFile, err := client.getMacroImage(macro)
+				imageFile, err := config.client.getMacroImage(macro)
 				if err != nil {
 					errChan <- err
 				} else {
@@ -77,7 +94,7 @@ func main() {
 				errors = append(errors, err)
 				bar.Increment()
 			case image := <-imageChan:
-				if err := writer.writeImage(image); err != nil {
+				if err := config.writer.writeImage(image); err != nil {
 					errors = append(errors, err)
 				}
 				bar.Increment()
