@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/cheggaaa/pb"
 )
@@ -12,6 +13,11 @@ func main() {
 	host := flag.String("host", "", "the host of the Phabricator instance")
 	key := flag.String("key", "", "the Conduit API key for Phabricator")
 	dir := flag.String("dir", "", "the output directory for the macro images")
+	numConcurrentFetches := flag.Int(
+		"numConcurrentFetches",
+		10,
+		"number of HTTP requests to have in-flight concurrently",
+	)
 
 	flag.Parse()
 
@@ -38,9 +44,25 @@ func main() {
 	bar := pb.New(len(macros))
 	bar.Start()
 
+	wg := new(sync.WaitGroup)
+	pendingMacros := make(chan macro)
 	errChan := make(chan error)
 	imageChan := make(chan macroImage)
 	var errors []error
+
+	for i := 0; i < *numConcurrentFetches; i++ {
+		go func() {
+			for {
+				macro := <-pendingMacros
+				imageFile, err := client.getMacroImage(macro)
+				if err != nil {
+					errChan <- err
+				} else {
+					imageChan <- imageFile
+				}
+			}
+		}()
+	}
 
 	go func() {
 		for {
@@ -58,13 +80,9 @@ func main() {
 	}()
 
 	for _, macro := range macros {
-		go func() {
-			imageFile, err := client.getMacroImage(macro)
-			if err != nil {
-				errChan <- err
-			} else {
-				imageChan <- imageFile
-			}
-		}()
+		pendingMacros <- macro
+		wg.Add(1)
 	}
+
+	wg.Wait()
 }
