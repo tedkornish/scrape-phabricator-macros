@@ -2,6 +2,7 @@ package main
 
 import (
 	"io/ioutil"
+	"os"
 	"path/filepath"
 )
 
@@ -15,4 +16,12 @@ func (w writer) writeImage(image macroImage) error {
 		return err
 	}
 	return nil
+}
+
+func (w writer) test() error {
+	testFilePath := filepath.Join(w.dir, "test")
+	if err := ioutil.WriteFile(testFilePath, []byte("test"), 0600); err != nil {
+		return err
+	}
+	return os.Remove(testFilePath)
 }

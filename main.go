@@ -35,6 +35,12 @@ func main() {
 	client := client{host: *host, key: *key}
 	writer := writer{dir: *dir}
 
+	// Test the writer before sending any HTTP requests so we can short-circuit.
+	if err := writer.test(); err != nil {
+		fmt.Println("Can't write to specified directory:", err)
+		os.Exit(1)
+	}
+
 	macros, err := client.getMacros()
 	if err != nil {
 		fmt.Println("Failed to fetch macros:", err)
