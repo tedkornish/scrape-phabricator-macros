@@ -45,6 +45,53 @@ func getConfig() (config, error) {
 	}, nil
 }
 
+type channels struct {
+	pending chan macro
+	errors  chan error
+	images  chan macroImage
+}
+
+func (c *channels) closeAll() {
+	close(c.pending)
+	close(c.errors)
+	close(c.images)
+}
+
+func makeChannels() *channels {
+	return &channels{
+		pending: make(chan macro),
+		errors:  make(chan error),
+		images:  make(chan macroImage),
+	}
+}
+
+type errorSet struct {
+	mu     *sync.Mutex
+	errors []error
+}
+
+func makeErrorSet() *errorSet {
+	return &errorSet{
+		mu:     new(sync.Mutex),
+		errors: make([]error, 0),
+	}
+}
+
+func (set *errorSet) add(err error) {
+	set.mu.Lock()
+	set.errors = append(set.errors)
+	set.mu.Unlock()
+}
+
+func (set *errorSet) printAll() {
+	set.mu.Lock()
+	fmt.Printf("%d errors:\n", len(set.errors))
+	for _, error := range set.errors {
+		fmt.Println("-", error)
+	}
+	set.mu.Unlock()
+}
+
 func main() {
 	config, err := getConfig()
 	if err != nil {
@@ -64,50 +111,68 @@ func main() {
 		os.Exit(1)
 	}
 
-	bar := pb.New(len(macros))
+	var (
+		bar      = pb.New(len(macros))
+		wg       = new(sync.WaitGroup)
+		errorSet = makeErrorSet()
+		channels = makeChannels()
+	)
+
 	bar.Start()
 
-	wg := new(sync.WaitGroup)
-	pendingMacros := make(chan macro)
-	errChan := make(chan error)
-	imageChan := make(chan macroImage)
-	var errors []error
-
+	// Start as many goroutines fetching images as specified in the config.
 	for i := 0; i < config.numConcurrentFetches; i++ {
-		go func() {
-			for {
-				macro := <-pendingMacros
-				imageFile, err := config.client.getMacroImage(macro)
-				if err != nil {
-					errChan <- err
-				} else {
-					imageChan <- imageFile
-				}
-			}
-		}()
+		go getMacroImage(config.client, channels)
 	}
 
-	go func() {
-		for {
-			select {
-			case err := <-errChan:
-				errors = append(errors, err)
-				bar.Increment()
-				wg.Done()
-			case image := <-imageChan:
-				if err := config.writer.writeImage(image); err != nil {
-					errors = append(errors, err)
-				}
-				bar.Increment()
-				wg.Done()
-			}
-		}
-	}()
+	go handleImage(channels, errorSet, wg, config.writer, bar)
 
 	for _, macro := range macros {
-		pendingMacros <- macro
+		channels.pending <- macro
 		wg.Add(1)
 	}
 
 	wg.Wait()
+
+	// When we're done, close all the channels and print all the errors.
+	channels.closeAll()
+	errorSet.printAll()
+}
+
+func getMacroImage(
+	client client,
+	channels *channels,
+) {
+	for {
+		macro := <-channels.pending
+		imageFile, err := client.getMacroImage(macro)
+		if err != nil {
+			channels.errors <- err
+		} else {
+			channels.images <- imageFile
+		}
+	}
+}
+
+func handleImage(
+	channels *channels,
+	errorSet *errorSet,
+	wg *sync.WaitGroup,
+	writer writer,
+	bar *pb.ProgressBar,
+) {
+	for {
+		select {
+		case err := <-channels.errors:
+			errorSet.add(err)
+			bar.Increment()
+			wg.Done()
+		case image := <-channels.images:
+			if err := writer.writeImage(image); err != nil {
+				errorSet.add(err)
+			}
+			bar.Increment()
+			wg.Done()
+		}
+	}
 }
