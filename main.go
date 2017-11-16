@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -84,14 +85,11 @@ func getConfig() (config, error) {
 	flag.Parse()
 
 	if *host == "" {
-		fmt.Println("Please specify a Phabricator host with the -host flag")
-		os.Exit(1)
+		return config{}, errors.New("please specify a Phabricator host with the -host flag")
 	} else if *key == "" {
-		fmt.Println("Please specify an API key with the -key flag")
-		os.Exit(1)
+		return config{}, errors.New("please specify an API key with the -key flag")
 	} else if *dir == "" {
-		fmt.Println("Please specify an output directory with the -dir flag")
-		os.Exit(1)
+		return config{}, errors.New("please specify an output directory with the -dir flag")
 	}
 
 	return config{
