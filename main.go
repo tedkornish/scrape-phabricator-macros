@@ -215,7 +215,6 @@ func (c client) urlWithToken(url string, params map[string]string) string {
 func (c client) getMacros() ([]macro, error) {
 	var payload struct {
 		Result map[string]struct {
-			URI      string `json:"uri"`
 			FilePHID string `json:"filePHID"`
 		} `json:"result"`
 	}
