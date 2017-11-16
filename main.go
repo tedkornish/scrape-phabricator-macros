@@ -84,7 +84,7 @@ func getConfig() (config, error) {
 	dir := flag.String("dir", "", "the output directory for the macro images")
 	numConcurrentFetches := flag.Int(
 		"numConcurrentFetches",
-		10,
+		50,
 		"number of HTTP requests to have in-flight concurrently",
 	)
 
