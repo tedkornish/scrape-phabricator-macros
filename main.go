@@ -59,7 +59,7 @@ func main() {
 
 	for _, macro := range macros {
 		go func() {
-			imageFile, err := client.getMacroImage(macro.name)
+			imageFile, err := client.getMacroImage(macro)
 			if err != nil {
 				errChan <- err
 			} else {

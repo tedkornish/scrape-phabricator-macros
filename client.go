@@ -3,23 +3,28 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net/http"
-	"net/url"
+	liburl "net/url"
 )
 
 type (
 	client struct{ host, key string }
 	macro  struct{ uri, name string }
+
+	macroImage struct {
+		macro
+		body []byte
+	}
 )
 
-type macroImage string
-
 func (c client) methodURL(apiMethod string) string {
-	return fmt.Sprintf("%s/api/%s?%s",
-		c.host,
-		apiMethod,
-		url.Values{"api.token": []string{c.key}}.Encode(),
-	)
+	return c.urlWithToken(c.host + "/api/" + apiMethod)
+}
+
+func (c client) urlWithToken(url string) string {
+	values := liburl.Values{"api.token": []string{c.key}}
+	return fmt.Sprintf("%s?%s", url, values.Encode())
 }
 
 func (c client) getMacros() ([]macro, error) {
@@ -47,6 +52,17 @@ func (c client) getMacros() ([]macro, error) {
 	return macros, nil
 }
 
-func (c client) getMacroImage(macroName string) (macroImage, error) {
-	return "", nil
+func (c client) getMacroImage(macro macro) (macroImage, error) {
+	resp, err := http.Get(c.urlWithToken(macro.uri))
+	if err != nil {
+		return macroImage{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return macroImage{}, err
+	}
+
+	return macroImage{macro: macro, body: body}, nil
 }
