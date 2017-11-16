@@ -9,6 +9,62 @@ import (
 	"github.com/cheggaaa/pb"
 )
 
+func main() {
+
+	// Get config from flags. This struct contains client and writer abstractions
+	// which give us access to the outside world - specifically, to the
+	// Phabricator HTTP API and to the local filesystem.
+	config, err := getConfig()
+	if err != nil {
+		fmt.Println("Failed to get config:", err)
+		os.Exit(1)
+	}
+
+	// Test the writer before sending any HTTP requests so we can short-circuit;
+	// we want to avoid sending a single HTTP request if we can anticipate a local
+	// filesystem error, such as incorrect permissions.
+	if err := config.writer.test(); err != nil {
+		fmt.Println("Can't write to specified directory:", err)
+		os.Exit(1)
+	}
+
+	// Get a list of all macros so we know which images to fetch.
+	macros, err := config.client.getMacros()
+	if err != nil {
+		fmt.Println("Failed to fetch macros:", err)
+		os.Exit(1)
+	}
+
+	var (
+		bar      = pb.New(len(macros))
+		wg       = new(sync.WaitGroup)
+		errorSet = makeErrorSet()
+		channels = makeChannels()
+	)
+
+	bar.Start()
+
+	// Start as many goroutines fetching images as specified in the config.
+	for i := 0; i < config.numConcurrentFetches; i++ {
+		go getMacroImage(config.client, channels)
+	}
+
+	// Wait for image bytes to come through so we can write them to files locally.
+	go handleImage(channels, errorSet, wg, config.writer, bar)
+
+	// Actually queue the macros up for retrieval.
+	for _, macro := range macros {
+		channels.pending <- macro
+		wg.Add(1)
+	}
+
+	wg.Wait()
+
+	// When we're done, close all the channels and print all the errors.
+	channels.closeAll()
+	errorSet.printAll()
+}
+
 type config struct {
 	client               client
 	writer               writer
@@ -94,57 +150,10 @@ func (set *errorSet) printAll() {
 	set.mu.Unlock()
 }
 
-func main() {
-	config, err := getConfig()
-	if err != nil {
-		fmt.Println("Failed to get config:", err)
-		os.Exit(1)
-	}
-
-	// Test the writer before sending any HTTP requests so we can short-circuit.
-	if err := config.writer.test(); err != nil {
-		fmt.Println("Can't write to specified directory:", err)
-		os.Exit(1)
-	}
-
-	macros, err := config.client.getMacros()
-	if err != nil {
-		fmt.Println("Failed to fetch macros:", err)
-		os.Exit(1)
-	}
-
-	var (
-		bar      = pb.New(len(macros))
-		wg       = new(sync.WaitGroup)
-		errorSet = makeErrorSet()
-		channels = makeChannels()
-	)
-
-	bar.Start()
-
-	// Start as many goroutines fetching images as specified in the config.
-	for i := 0; i < config.numConcurrentFetches; i++ {
-		go getMacroImage(config.client, channels)
-	}
-
-	go handleImage(channels, errorSet, wg, config.writer, bar)
-
-	for _, macro := range macros {
-		channels.pending <- macro
-		wg.Add(1)
-	}
-
-	wg.Wait()
-
-	// When we're done, close all the channels and print all the errors.
-	channels.closeAll()
-	errorSet.printAll()
-}
-
-func getMacroImage(
-	client client,
-	channels *channels,
-) {
+// Loop forever, reading macros off the pending channel, sending the request
+// to get the corresponding image, and either passing the image or an error
+// back via a channel.
+func getMacroImage(client client, channels *channels) {
 	for {
 		macro := <-channels.pending
 		imageFile, err := client.getMacroImage(macro)
@@ -156,6 +165,8 @@ func getMacroImage(
 	}
 }
 
+// Loop forever, reading either images or errors. If an image, write to the
+// proper local file. Increment the bar and decrement the WaitGroup regardless.
 func handleImage(
 	channels *channels,
 	errorSet *errorSet,
@@ -167,14 +178,12 @@ func handleImage(
 		select {
 		case err := <-channels.errors:
 			errorSet.add(err)
-			bar.Increment()
-			wg.Done()
 		case image := <-channels.images:
 			if err := writer.writeImage(image); err != nil {
 				errorSet.add(err)
 			}
-			bar.Increment()
-			wg.Done()
 		}
+		bar.Increment()
+		wg.Done()
 	}
 }
