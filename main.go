@@ -1,10 +1,16 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	liburl "net/url"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/cheggaaa/pb"
@@ -99,6 +105,8 @@ func getConfig() (config, error) {
 	}, nil
 }
 
+// A collection of channels for queueing the retrieval of macros and writing of
+// images.
 type channels struct {
 	pending chan macro
 	errors  chan error
@@ -119,6 +127,7 @@ func makeChannels() *channels {
 	}
 }
 
+// A concurrency-safe list of errors.
 type errorSet struct {
 	mu     *sync.Mutex
 	errors []error
@@ -137,6 +146,7 @@ func (set *errorSet) add(err error) {
 	set.mu.Unlock()
 }
 
+// Print each error on a new line to stdout.
 func (set *errorSet) printAll() {
 	set.mu.Lock()
 	if len(set.errors) > 0 {
@@ -146,6 +156,114 @@ func (set *errorSet) printAll() {
 		}
 	}
 	set.mu.Unlock()
+}
+
+// writer abstracts away interaction with the local filesystem.
+type writer struct {
+	dir string
+}
+
+// Write an image in .gif format to the filesystem.
+func (w writer) writeImage(image macroImage) error {
+	err := ioutil.WriteFile(filepath.Join(w.dir, image.name+".gif"), image.body, 0600)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Write a test file to the filesystem at the specified directory just to see if
+// we can.
+func (w writer) test() error {
+	testFilePath := filepath.Join(w.dir, "test")
+	if err := ioutil.WriteFile(testFilePath, []byte("test"), 0600); err != nil {
+		return err
+	}
+	return os.Remove(testFilePath)
+}
+
+// macro encodes for the name and file PHID (Phabricator ID) of a macro.
+type macro struct{ name, filePHID string }
+
+// macroImage is a macro with its contents encoded as raw bytes.
+type macroImage struct {
+	macro
+	body []byte
+}
+
+type client struct {
+	host, key string
+}
+
+// Return the url for a GET request to the specified Phabricator API method.
+func (c client) methodURL(apiMethod string, params map[string]string) string {
+	return c.urlWithToken(c.host+"/api/"+apiMethod, params)
+}
+
+// Given a raw URL string and arbitrary query params, add the client's API token
+// to the params in the proper key and return the full encoded URL.
+func (c client) urlWithToken(url string, params map[string]string) string {
+	values := liburl.Values{"api.token": []string{c.key}}
+	for key, val := range params {
+		values[key] = []string{val}
+	}
+	return fmt.Sprintf("%s?%s", url, values.Encode())
+}
+
+// Retrieve a list of macros from the client's Phabricator instance
+// using the client's API key.
+func (c client) getMacros() ([]macro, error) {
+	var payload struct {
+		Result map[string]struct {
+			URI      string `json:"uri"`
+			FilePHID string `json:"filePHID"`
+		} `json:"result"`
+	}
+
+	resp, err := http.Get(c.methodURL("macro.query", nil))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	var macros []macro
+	for macroName, payload := range payload.Result {
+		macros = append(macros, macro{name: macroName, filePHID: payload.FilePHID})
+	}
+
+	return macros, nil
+}
+
+// Retrieve a given macro's image.
+func (c client) getMacroImage(macro macro) (macroImage, error) {
+	resp, err := http.Get(c.methodURL("file.download", map[string]string{
+		"phid": macro.filePHID,
+	}))
+	if err != nil {
+		return macroImage{}, err
+	}
+	defer resp.Body.Close()
+
+	// Oddly, images from the file.download endpoint come as base64-encoded
+	// strings, so we'll need to decode those before writing the bytes to disk.
+	var payload struct {
+		Result string `json:"result"` // a base64-encoded string
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return macroImage{}, err
+	}
+
+	body, err := base64.StdEncoding.DecodeString(payload.Result)
+	if err != nil {
+		return macroImage{}, err
+	}
+
+	return macroImage{macro: macro, body: body}, nil
 }
 
 // Loop forever, reading macros off the pending channel, sending the request
